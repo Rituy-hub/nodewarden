@@ -427,6 +427,8 @@ const it: Record<string, string> = {
   "txt_backup_webdav_username": "Nome utente WebDAV",
   "txt_backup_webdav_password": "Password WebDAV",
   "txt_backup_webdav_path": "Cartella remota",
+  "txt_backup_webdav_allow_private_host": "Consenti indirizzo LAN / privato",
+  "txt_backup_webdav_allow_private_host_hint": "Attiva solo se NodeWarden può raggiungere la tua LAN (self-hosted). Su Cloudflare Workers, la rete perimetrale non può raggiungere un NAS domestico: usa un URL pubblico, DDNS o un tunnel.",
   "txt_backup_s3_endpoint": "Endpoint S3",
   "txt_backup_s3_addressing_style": "Stile di indirizzamento S3",
   "txt_backup_s3_addressing_path_style": "Stile percorso (predefinito)",

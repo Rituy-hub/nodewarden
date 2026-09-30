@@ -480,6 +480,8 @@ const en: Record<string, string> = {
   "txt_backup_webdav_username": "WebDAV Username",
   "txt_backup_webdav_password": "WebDAV Password",
   "txt_backup_webdav_path": "Remote Folder",
+  "txt_backup_webdav_allow_private_host": "Allow LAN / private network address",
+  "txt_backup_webdav_allow_private_host_hint": "Enable only when NodeWarden can reach your LAN (self-hosted). On Cloudflare Workers the edge network cannot reach a home NAS — expose WebDAV through a public URL, DDNS or a tunnel (Cloudflare Tunnel / Tailscale Funnel) instead.",
   "txt_backup_s3_endpoint": "S3 Endpoint",
   "txt_backup_s3_addressing_style": "S3 Addressing Style",
   "txt_backup_s3_addressing_path_style": "path-style (default)",

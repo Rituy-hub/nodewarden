@@ -430,6 +430,8 @@ const zhCN: Record<string, string> = {
   "txt_backup_webdav_username": "WebDAV 用户名",
   "txt_backup_webdav_password": "WebDAV 密码",
   "txt_backup_webdav_path": "远程目录",
+  "txt_backup_webdav_allow_private_host": "允许局域网 / 内网地址",
+  "txt_backup_webdav_allow_private_host_hint": "仅当 NodeWarden 能访问到局域网时开启（如自托管部署）。部署在 Cloudflare Workers 时，边缘网络无法连接家中 NAS，请改用公网域名、DDNS 或内网穿透（Cloudflare Tunnel / Tailscale Funnel）地址。",
   "txt_backup_s3_endpoint": "S3 端点 URL",
   "txt_backup_s3_addressing_style": "寻址方式",
   "txt_backup_s3_addressing_path_style": "path-style（默认）",

@@ -83,19 +83,38 @@ function parseIpv4Address(hostname: string): number[] | null {
   return octets.every((value) => value >= 0) ? octets : null;
 }
 
-function isBlockedIpv4Address(octets: number[]): boolean {
+/**
+ * IP ranges that are never allowed, even when the destination opts into
+ * private / LAN endpoints. These cover loopback, cloud metadata, link-local,
+ * multicast and IETF-special-purpose space, where an SSRF-style request has
+ * no legitimate backup use.
+ */
+function isAlwaysBlockedIpv4Address(octets: number[]): boolean {
   const [a, b, c] = octets;
   return (
     a === 0 ||
-    a === 10 ||
     a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
     (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && (b === 0 || b === 168)) ||
-    (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
-    (a === 203 && b === 0 && c === 113) ||
+    (a === 192 && b === 0) ||
+    (a === 198 && (b === 18 || b === 19)) ||
     a >= 224
+  );
+}
+
+/**
+ * Private / LAN ranges: 10/8, 172.16/12, 192.168/16, 100.64/10 (CGNAT,
+ * Tailscale), plus TEST-NET documentation ranges. Blocked by default;
+ * allowed only when the destination sets allowPrivateHost.
+ */
+function isPrivateIpv4Address(octets: number[]): boolean {
+  const [a, b, c] = octets;
+  return (
+    a === 10 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113)
   );
 }
 
@@ -133,7 +152,7 @@ function expandIpv6Address(hostname: string): string[] | null {
   return hextets;
 }
 
-function isBlockedIpv6Address(hostname: string): boolean {
+function isBlockedIpv6Address(hostname: string, allowPrivate = false): boolean {
   if (!hostname.includes(':')) return false;
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
 
@@ -141,7 +160,7 @@ function isBlockedIpv6Address(hostname: string): boolean {
   const mappedIpv4 = normalized.match(/::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
   if (mappedIpv4) {
     const octets = parseIpv4Address(mappedIpv4[1]);
-    return !octets || isBlockedIpv4Address(octets);
+    return !octets || isAlwaysBlockedIpv4Address(octets) || (!allowPrivate && isPrivateIpv4Address(octets));
   }
 
   // IPv4-mapped hex form produced by some URL parsers: ::ffff:7f00:1
@@ -151,7 +170,7 @@ function isBlockedIpv6Address(hostname: string): boolean {
     const lo = Number.parseInt(mappedHex[2], 16);
     if (!Number.isFinite(hi) || !Number.isFinite(lo)) return true;
     const octets = [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff];
-    return isBlockedIpv4Address(octets);
+    return isAlwaysBlockedIpv4Address(octets) || (!allowPrivate && isPrivateIpv4Address(octets));
   }
 
   const hextets = expandIpv6Address(normalized);
@@ -161,51 +180,81 @@ function isBlockedIpv6Address(hostname: string): boolean {
   // After expansion, loopback (::1) and unspecified (::) have first hextet 0.
   return (
     firstHextet === 0 ||
-    (firstHextet & 0xfe00) === 0xfc00 ||
     (firstHextet & 0xffc0) === 0xfe80 ||
     (firstHextet & 0xff00) === 0xff00 ||
-    hextets.join(':').startsWith('2001:0db8:')
+    hextets.join(':').startsWith('2001:0db8:') ||
+    (!allowPrivate && (firstHextet & 0xfe00) === 0xfc00)
   );
 }
 
-function assertBackupEndpointHostAllowed(hostname: string, label: string): void {
+/**
+ * Hostnames that must never be allowed as a backup endpoint, regardless of
+ * allowPrivateHost. They either mean loopback (localhost, *.localhost) or are
+ * DNS rebinding / development utilities that can resolve to loopback.
+ */
+function isAlwaysBlockedHostname(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === 'localhost.localdomain' ||
+    hostname.endsWith('.localhost.localdomain') ||
+    hostname.endsWith('.localhost') ||
+    hostname === 'metadata.google.internal' ||
+    hostname === 'localtest.me' ||
+    hostname.endsWith('.localtest.me') ||
+    hostname === 'lvh.me' ||
+    hostname.endsWith('.lvh.me') ||
+    hostname === 'vcap.me' ||
+    hostname.endsWith('.vcap.me') ||
+    hostname === 'nip.io' ||
+    hostname.endsWith('.nip.io') ||
+    hostname === 'sslip.io' ||
+    hostname.endsWith('.sslip.io') ||
+    hostname === 'xip.io' ||
+    hostname.endsWith('.xip.io')
+  );
+}
+
+/**
+ * LAN-only hostnames (mDNS / private DNS). Blocked by default, allowed only
+ * when the destination sets allowPrivateHost.
+ */
+function isPrivateOnlyHostname(hostname: string): boolean {
+  return (
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.lan') ||
+    hostname.endsWith('.internal') ||
+    hostname.endsWith('.home.arpa')
+  );
+}
+
+function assertBackupEndpointHostAllowed(hostname: string, label: string, allowPrivate = false): void {
   const normalized = normalizeHostnameForPolicy(hostname);
   if (!normalized) throw new Error(`${label} host is required`);
-  if (
-    normalized === 'localhost' ||
-    normalized === 'localhost.localdomain' ||
-    normalized.endsWith('.localhost.localdomain') ||
-    normalized.endsWith('.localhost') ||
-    normalized.endsWith('.local') ||
-    normalized.endsWith('.home.arpa') ||
-    normalized.endsWith('.internal') ||
-    normalized.endsWith('.lan') ||
-    normalized === 'metadata.google.internal' ||
-    normalized === 'localtest.me' ||
-    normalized.endsWith('.localtest.me') ||
-    normalized === 'lvh.me' ||
-    normalized.endsWith('.lvh.me') ||
-    normalized === 'vcap.me' ||
-    normalized.endsWith('.vcap.me') ||
-    normalized === 'nip.io' ||
-    normalized.endsWith('.nip.io') ||
-    normalized === 'sslip.io' ||
-    normalized.endsWith('.sslip.io') ||
-    normalized === 'xip.io' ||
-    normalized.endsWith('.xip.io')
-  ) {
+  if (isAlwaysBlockedHostname(normalized)) {
     throw new Error(`${label} host is not allowed`);
+  }
+  if (!allowPrivate && isPrivateOnlyHostname(normalized)) {
+    throw new Error(
+      `${label} host is not allowed (private/LAN address; enable "Allow LAN address" on this destination to use a home NAS endpoint)`
+    );
   }
   const ipv4 = parseIpv4Address(normalized);
-  if (ipv4 && isBlockedIpv4Address(ipv4)) {
-    throw new Error(`${label} host is not allowed`);
+  if (ipv4) {
+    if (isAlwaysBlockedIpv4Address(ipv4)) {
+      throw new Error(`${label} host is not allowed`);
+    }
+    if (!allowPrivate && isPrivateIpv4Address(ipv4)) {
+      throw new Error(
+        `${label} host is not allowed (private/LAN address; enable "Allow LAN address" on this destination to use a home NAS endpoint)`
+      );
+    }
   }
-  if (isBlockedIpv6Address(normalized)) {
+  if (isBlockedIpv6Address(normalized, allowPrivate)) {
     throw new Error(`${label} host is not allowed`);
   }
 }
 
-export function normalizeBackupEndpointUrl(value: string, label: string): string {
+export function normalizeBackupEndpointUrl(value: string, label: string, allowPrivate = false): string {
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -221,7 +270,7 @@ export function normalizeBackupEndpointUrl(value: string, label: string): string
   if (parsed.search || parsed.hash) {
     throw new Error(`${label} must not include query or fragment`);
   }
-  assertBackupEndpointHostAllowed(parsed.hostname, label);
+  assertBackupEndpointHostAllowed(parsed.hostname, label, allowPrivate);
   return parsed.toString().replace(/\/+$/, '');
 }
 
@@ -309,10 +358,11 @@ function normalizeWebDavDestination(value: unknown, allowIncomplete = false): We
   const username = asTrimmedString(source.username);
   const password = String(source.password ?? '');
   const remotePath = normalizePath(source.remotePath);
+  const allowPrivateHost = source.allowPrivateHost === true;
 
   if (!allowIncomplete || baseUrl) {
     if (!baseUrl) throw new Error('WebDAV server URL is required');
-    normalizeBackupEndpointUrl(baseUrl, 'WebDAV server URL');
+    normalizeBackupEndpointUrl(baseUrl, 'WebDAV server URL', allowPrivateHost);
   }
   if (!allowIncomplete || username) {
     if (!username) throw new Error('WebDAV username is required');
@@ -322,10 +372,11 @@ function normalizeWebDavDestination(value: unknown, allowIncomplete = false): We
   }
 
   return {
-    baseUrl: baseUrl ? normalizeBackupEndpointUrl(baseUrl, 'WebDAV server URL') : '',
+    baseUrl: baseUrl ? normalizeBackupEndpointUrl(baseUrl, 'WebDAV server URL', allowPrivateHost) : '',
     username,
     password,
     remotePath,
+    allowPrivateHost,
   };
 }
 

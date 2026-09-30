@@ -427,6 +427,8 @@ const de: Record<string, string> = {
   "txt_backup_webdav_username": "WebDAV Benutzername",
   "txt_backup_webdav_password": "WebDAV Passwort",
   "txt_backup_webdav_path": "Remote-Ordner",
+  "txt_backup_webdav_allow_private_host": "LAN / private Adresse zulassen",
+  "txt_backup_webdav_allow_private_host_hint": "Nur aktivieren, wenn NodeWarden Ihr LAN erreichen kann (selbst gehostet). Auf Cloudflare Workers kann das Edge-Netzwerk ein Heim-NAS nicht erreichen – verwenden Sie stattdessen eine öffentliche URL, DDNS oder einen Tunnel.",
   "txt_backup_s3_endpoint": "S3-Endpunkt",
   "txt_backup_s3_addressing_style": "S3 Adressierungsstil",
   "txt_backup_s3_addressing_path_style": "Pfadstil (Standard)",

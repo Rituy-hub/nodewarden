@@ -416,6 +416,26 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
                   }))}
                 />
               </label>
+              <div className="field field-span-2">
+                <label className="backup-option-label">
+                  <input
+                    type="checkbox"
+                    checked={!!(props.selectedDestination.destination as WebDavBackupDestination).allowPrivateHost}
+                    disabled={props.loadingSettings || props.disableWhileBusy}
+                    onInput={(event) => props.onUpdateDestination((destination) => ({
+                      ...destination,
+                      destination: {
+                        ...(destination.destination as WebDavBackupDestination),
+                        allowPrivateHost: (event.currentTarget as HTMLInputElement).checked,
+                      },
+                    }))}
+                  />
+                  <span>{t('txt_backup_webdav_allow_private_host')}</span>
+                </label>
+                <div className="backup-recommendation-inline-note">
+                  {t('txt_backup_webdav_allow_private_host_hint')}
+                </div>
+              </div>
               <label className="field">
                 <span>{t('txt_backup_webdav_username')}</span>
                 <input

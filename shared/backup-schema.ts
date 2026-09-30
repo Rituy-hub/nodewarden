@@ -32,6 +32,14 @@ export interface WebDavBackupDestination {
   username: string;
   password: string;
   remotePath: string;
+  /**
+   * Allow private / LAN endpoints (e.g. 192.168.x.x, 10.x, 100.x Tailscale
+   * range, hostname.local). Only useful when NodeWarden itself can reach the
+   * LAN (self-hosted via `wrangler dev` / local deployment). On Cloudflare
+   * Workers the edge network cannot reach a home NAS, so a public URL
+   * (DDNS, port forward or tunnel) is still required.
+   */
+  allowPrivateHost?: boolean;
 }
 
 export type BackupDestinationConfig =
@@ -118,6 +126,7 @@ export function createDefaultBackupDestinationConfig(type: BackupDestinationType
     username: '',
     password: '',
     remotePath: BACKUP_DEFAULT_WEBDAV_REMOTE_PATH,
+    allowPrivateHost: false,
   };
 }
 

@@ -160,6 +160,53 @@ function toBasicAuthHeader(username: string, password: string): string {
   return `Basic ${token}`;
 }
 
+const WEBDAV_MAX_REDIRECTS = 5;
+
+/**
+ * WebDAV-aware fetch. Cloudflare Workers' default redirect mode converts
+ * 301/302/303 responses into a GET, which silently destroys PUT / MKCOL /
+ * PROPFIND semantics. NAS WebDAV servers commonly redirect (HTTP→HTTPS, or
+ * appending a trailing slash), so redirects are followed manually while the
+ * original method and body are preserved.
+ */
+async function webDavFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  let currentUrl = url;
+  let remaining = WEBDAV_MAX_REDIRECTS;
+  for (;;) {
+    const response = await fetch(currentUrl, { ...init, redirect: 'manual' });
+    const status = response.status;
+    const location = status >= 300 && status < 400 ? response.headers.get('Location') : null;
+    if (!location || remaining <= 0) {
+      return response;
+    }
+    remaining -= 1;
+    currentUrl = new URL(location, currentUrl).toString();
+  }
+}
+
+/**
+ * Build a human-readable failure message that includes the HTTP status and,
+ * when available, a short snippet of the server's response body. This makes
+ * NAS-specific WebDAV problems (odd status codes, XML error messages)
+ * diagnosable from the backup center.
+ */
+async function describeWebDavFailure(response: Response, fallback: string): Promise<string> {
+  let detail = '';
+  try {
+    const text = (await response.text()).trim().replace(/\s+/g, ' ').slice(0, 180);
+    if (text) detail = `: ${text}`;
+  } catch {
+    // Ignore body read failures; the status code is still reported.
+  }
+  return `${fallback}: ${response.status}${detail}`;
+}
+
+const WEBDAV_PROPFIND_BODY =
+  `<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><resourcetype/><getcontentlength/><getlastmodified/></prop></propfind>`;
+
+const WEBDAV_PROPFIND_BODY_LIGHT =
+  `<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>`;
+
 function buildCanonicalQueryString(url: URL): string {
   const params = Array.from(url.searchParams.entries()).sort(([aKey, aValue], [bKey, bValue]) => {
     if (aKey === bKey) return aValue.localeCompare(bValue);
@@ -216,7 +263,7 @@ function ensureDestinationConfigReady(destination: BackupDestinationRecord): voi
   if (destination.type === 'webdav') {
     const config = destination.destination as WebDavBackupDestination;
     if (!String(config.baseUrl || '').trim()) throw new Error('WebDAV server URL is required');
-    normalizeBackupEndpointUrl(String(config.baseUrl || '').trim(), 'WebDAV server URL');
+    normalizeBackupEndpointUrl(String(config.baseUrl || '').trim(), 'WebDAV server URL', !!config.allowPrivateHost);
     if (!String(config.username || '').trim()) throw new Error('WebDAV username is required');
     if (!String(config.password || '')) throw new Error('WebDAV password is required');
     return;
@@ -241,20 +288,43 @@ function webDavFullPath(config: WebDavBackupDestination, relativePath: string): 
   return buildJoinedPath(config.remotePath, normalizeRelativePath(relativePath));
 }
 
+/**
+ * Verify that a directory exists on the server via a Depth-0 PROPFIND.
+ * Used as a fallback when MKCOL answers with a non-standard status code
+ * (some NAS WebDAV servers report 403/409/… for an already-existing
+ * collection instead of the standard 405).
+ */
+async function webDavDirectoryExists(baseUrl: string, directoryPath: string, authHeader: string): Promise<boolean> {
+  const response = await webDavFetch(buildWebDavUrl(baseUrl, directoryPath), {
+    method: 'PROPFIND',
+    headers: {
+      Authorization: authHeader,
+      Depth: '0',
+      'Content-Type': 'application/xml; charset=utf-8',
+    },
+    body: WEBDAV_PROPFIND_BODY_LIGHT,
+  });
+  if (!response.ok) return false;
+  const xml = await response.text();
+  const resourceTypeBlock = extractXmlFirst(xml, 'resourcetype') || '';
+  return /<(?:[^:>]+:)?collection\b/i.test(resourceTypeBlock);
+}
+
 async function ensureWebDavDirectory(baseUrl: string, directoryPath: string, authHeader: string): Promise<void> {
   const segments = trimSlashes(directoryPath).split('/').filter(Boolean);
   let current = '';
   for (const segment of segments) {
     current = buildJoinedPath(current, segment);
     const url = buildWebDavUrl(baseUrl, current);
-    const response = await fetch(url, {
+    const response = await webDavFetch(url, {
       method: 'MKCOL',
       headers: {
         Authorization: authHeader,
       },
     });
     if ([200, 201, 204, 405].includes(response.status)) continue;
-    throw new Error(`WebDAV directory creation failed: ${response.status}`);
+    if (await webDavDirectoryExists(baseUrl, current, authHeader)) continue;
+    throw new Error(await describeWebDavFailure(response, 'WebDAV directory creation failed'));
   }
 }
 
@@ -270,7 +340,7 @@ async function ensureWebDavDirectoryCached(
     current = buildJoinedPath(current, segment);
     if (ensuredDirectories.has(current)) continue;
     const url = buildWebDavUrl(baseUrl, current);
-    const response = await fetch(url, {
+    const response = await webDavFetch(url, {
       method: 'MKCOL',
       headers: {
         Authorization: authHeader,
@@ -280,7 +350,11 @@ async function ensureWebDavDirectoryCached(
       ensuredDirectories.add(current);
       continue;
     }
-    throw new Error(`WebDAV directory creation failed: ${response.status}`);
+    if (await webDavDirectoryExists(baseUrl, current, authHeader)) {
+      ensuredDirectories.add(current);
+      continue;
+    }
+    throw new Error(await describeWebDavFailure(response, 'WebDAV directory creation failed'));
   }
 }
 
@@ -303,7 +377,7 @@ async function putToWebDav(
     }
   }
 
-  const response = await fetch(buildWebDavUrl(config.baseUrl, remoteFilePath), {
+  const response = await webDavFetch(buildWebDavUrl(config.baseUrl, remoteFilePath), {
     method: 'PUT',
     headers: {
       Authorization: authHeader,
@@ -314,7 +388,7 @@ async function putToWebDav(
   });
 
   if (!response.ok) {
-    throw new Error(`WebDAV upload failed: ${response.status}`);
+    throw new Error(await describeWebDavFailure(response, 'WebDAV upload failed'));
   }
 }
 
@@ -328,9 +402,22 @@ async function uploadToWebDav(config: WebDavBackupDestination, archive: Uint8Arr
 
 function parseWebDavResponsePath(baseUrl: string, href: string): string {
   const base = new URL(baseUrl);
-  const target = new URL(href, base);
-  const basePath = trimSlashes(decodeURIComponent(base.pathname));
-  const entryPath = trimSlashes(decodeURIComponent(target.pathname));
+  let target: URL;
+  try {
+    target = new URL(href, base);
+  } catch {
+    return '';
+  }
+  const safeDecode = (value: string): string => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      // Tolerate malformed percent-encoding returned by some NAS servers.
+      return value;
+    }
+  };
+  const basePath = trimSlashes(safeDecode(base.pathname));
+  const entryPath = trimSlashes(safeDecode(target.pathname));
   if (!basePath) return entryPath;
   if (entryPath === basePath) return '';
   return entryPath.startsWith(`${basePath}/`) ? entryPath.slice(basePath.length + 1) : entryPath;
@@ -340,14 +427,14 @@ async function listWebDavEntries(config: WebDavBackupDestination, relativePath: 
   const currentPath = normalizeRelativePath(relativePath);
   const targetFullPath = webDavFullPath(config, currentPath);
   const authHeader = toBasicAuthHeader(config.username, config.password);
-  const response = await fetch(buildWebDavUrl(config.baseUrl, targetFullPath), {
+  const response = await webDavFetch(buildWebDavUrl(config.baseUrl, targetFullPath), {
     method: 'PROPFIND',
     headers: {
       Authorization: authHeader,
       Depth: '1',
       'Content-Type': 'application/xml; charset=utf-8',
     },
-    body: `<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><resourcetype/><getcontentlength/><getlastmodified/></prop></propfind>`,
+    body: WEBDAV_PROPFIND_BODY,
   });
   if (response.status === 404) {
     return {
@@ -358,13 +445,16 @@ async function listWebDavEntries(config: WebDavBackupDestination, relativePath: 
     };
   }
   if (!response.ok) {
-    throw new Error(`WebDAV listing failed: ${response.status}`);
+    throw new Error(await describeWebDavFailure(response, 'WebDAV listing failed'));
   }
 
   const xml = await response.text();
   const rootFullPath = trimSlashes(config.remotePath);
   const items: RemoteBackupItem[] = [];
   for (const block of extractXmlBlocks(xml, 'response')) {
+    // propstat with a 404 status means the resource is gone; skip it.
+    const statusRaw = extractXmlFirst(block, 'status');
+    if (statusRaw && /\s404(\s|$)/.test(statusRaw)) continue;
     const href = extractXmlFirst(block, 'href');
     if (!href) continue;
     const fullPath = trimSlashes(parseWebDavResponsePath(config.baseUrl, href));
@@ -408,14 +498,14 @@ async function downloadFromWebDav(config: WebDavBackupDestination, relativePath:
   }
   const authHeader = toBasicAuthHeader(config.username, config.password);
   const remotePath = webDavFullPath(config, normalized);
-  const response = await fetch(buildWebDavUrl(config.baseUrl, remotePath), {
+  const response = await webDavFetch(buildWebDavUrl(config.baseUrl, remotePath), {
     method: 'GET',
     headers: {
       Authorization: authHeader,
     },
   });
   if (!response.ok) {
-    throw new Error(`WebDAV download failed: ${response.status}`);
+    throw new Error(await describeWebDavFailure(response, 'WebDAV download failed'));
   }
   return {
     provider: 'webdav',
@@ -429,14 +519,14 @@ async function downloadFromWebDav(config: WebDavBackupDestination, relativePath:
 async function deleteFromWebDav(config: WebDavBackupDestination, relativePath: string): Promise<void> {
   const authHeader = toBasicAuthHeader(config.username, config.password);
   const remotePath = webDavFullPath(config, relativePath);
-  const response = await fetch(buildWebDavUrl(config.baseUrl, remotePath), {
+  const response = await webDavFetch(buildWebDavUrl(config.baseUrl, remotePath), {
     method: 'DELETE',
     headers: {
       Authorization: authHeader,
     },
   });
   if (!response.ok && response.status !== 404) {
-    throw new Error(`WebDAV delete failed: ${response.status}`);
+    throw new Error(await describeWebDavFailure(response, 'WebDAV delete failed'));
   }
 }
 
@@ -444,18 +534,54 @@ async function existsInWebDav(config: WebDavBackupDestination, relativePath: str
   return (await statWebDavFile(config, relativePath)) !== null;
 }
 
+/**
+ * Fallback stat path for WebDAV servers that do not implement HEAD
+ * (several NAS WebDAV stacks answer 405 to HEAD). Uses a Depth-0 PROPFIND
+ * and reads getcontentlength / getlastmodified from the response.
+ */
+async function statWebDavFileViaPropfind(config: WebDavBackupDestination, relativePath: string): Promise<RemoteBackupFileStat | null> {
+  const authHeader = toBasicAuthHeader(config.username, config.password);
+  const remotePath = webDavFullPath(config, relativePath);
+  const response = await webDavFetch(buildWebDavUrl(config.baseUrl, remotePath), {
+    method: 'PROPFIND',
+    headers: {
+      Authorization: authHeader,
+      Depth: '0',
+      'Content-Type': 'application/xml; charset=utf-8',
+    },
+    body: WEBDAV_PROPFIND_BODY,
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(await describeWebDavFailure(response, 'WebDAV existence check failed'));
+  }
+  const xml = await response.text();
+  const sizeRaw = extractXmlFirst(xml, 'getcontentlength');
+  const modifiedAtRaw = extractXmlFirst(xml, 'getlastmodified');
+  return {
+    provider: 'webdav',
+    remotePath: normalizeRelativePath(relativePath),
+    size: sizeRaw && Number.isFinite(Number(sizeRaw)) ? Number(sizeRaw) : null,
+    modifiedAt: modifiedAtRaw ? parseHttpDate(modifiedAtRaw) : null,
+  };
+}
+
 async function statWebDavFile(config: WebDavBackupDestination, relativePath: string): Promise<RemoteBackupFileStat | null> {
   const authHeader = toBasicAuthHeader(config.username, config.password);
   const remotePath = webDavFullPath(config, relativePath);
-  const response = await fetch(buildWebDavUrl(config.baseUrl, remotePath), {
+  const response = await webDavFetch(buildWebDavUrl(config.baseUrl, remotePath), {
     method: 'HEAD',
     headers: {
       Authorization: authHeader,
     },
   });
   if (response.status === 404) return null;
+  if (response.status === 405) {
+    // Some NAS WebDAV servers do not implement HEAD on files.
+    return statWebDavFileViaPropfind(config, relativePath);
+  }
   if (!response.ok) {
-    throw new Error(`WebDAV existence check failed: ${response.status}`);
+    throw new Error(await describeWebDavFailure(response, 'WebDAV existence check failed'));
   }
   const size = Number(response.headers.get('Content-Length') || '');
   return {

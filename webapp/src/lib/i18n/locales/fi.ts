@@ -427,6 +427,8 @@ const fi: Record<string, string> = {
   "txt_backup_webdav_username": "WebDAV-käyttäjänimi",
   "txt_backup_webdav_password": "WebDAV-salasana",
   "txt_backup_webdav_path": "Etäkansio",
+  "txt_backup_webdav_allow_private_host": "Salli lähiverkko- / yksityinen osoite",
+  "txt_backup_webdav_allow_private_host_hint": "Ota käyttöön vain, jos NodeWarden pääsee lähiverkkoosi (itse isännöity). Cloudflare Workersin reunaverkko ei yllä koti-NAS:iin – käytä julkista URL-osoitetta, DDNS:ää tai tunnelia.",
   "txt_backup_s3_endpoint": "S3-päätepiste",
   "txt_backup_s3_addressing_style": "S3-osoitustyyli",
   "txt_backup_s3_addressing_path_style": "polkutyyli (oletus)",

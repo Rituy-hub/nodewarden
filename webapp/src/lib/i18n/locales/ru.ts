@@ -427,6 +427,8 @@ const ru: Record<string, string> = {
   "txt_backup_webdav_username": "Имя пользователя WebDAV",
   "txt_backup_webdav_password": "Пароль WebDAV",
   "txt_backup_webdav_path": "Удаленная папка",
+  "txt_backup_webdav_allow_private_host": "Разрешить LAN / частный адрес",
+  "txt_backup_webdav_allow_private_host_hint": "Включайте только если NodeWarden может достичь вашей локальной сети (self-hosted). На Cloudflare Workers периферийная сеть не может подключиться к домашнему NAS — используйте публичный URL, DDNS или туннель.",
   "txt_backup_s3_endpoint": "S3 endpoint",
   "txt_backup_s3_addressing_style": "Стиль адресации S3",
   "txt_backup_s3_addressing_path_style": "path-style (по умолчанию)",

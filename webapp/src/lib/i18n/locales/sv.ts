@@ -427,6 +427,8 @@ const sv: Record<string, string> = {
   "txt_backup_webdav_username": "WebDAV Användarnamn",
   "txt_backup_webdav_password": "WebDAV Lösenord",
   "txt_backup_webdav_path": "Fjärrmapp",
+  "txt_backup_webdav_allow_private_host": "Tillåt LAN / privat adress",
+  "txt_backup_webdav_allow_private_host_hint": "Aktivera endast om NodeWarden kan nå ditt LAN (självhostat). På Cloudflare Workers kan kantsnätverket inte nå ett hem-NAS – använd en publik URL, DDNS eller en tunnel i stället.",
   "txt_backup_s3_endpoint": "S3-slutpunkt",
   "txt_backup_s3_addressing_style": "S3-adresseringsstil",
   "txt_backup_s3_addressing_path_style": "path-style (standard)",
